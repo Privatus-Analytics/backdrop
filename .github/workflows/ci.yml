@@ -44,12 +44,11 @@ jobs:
           docker run -d --name db --network bd -e MARIADB_ROOT_PASSWORD=root -e MARIADB_DATABASE=backdrop mariadb:11.4
           for i in $(seq 1 60); do docker exec db healthcheck.sh --connect && break; sleep 2; done
           docker run -d --name web --network bd -e BACKDROP_DB_HOST=db -e BACKDROP_DB_USER=root -e BACKDROP_DB_PASSWORD=root -e BACKDROP_DB_NAME=backdrop -v "$PWD/privatus_analytics:/var/www/html/modules/privatus_analytics:ro" backdrop:latest
-          sleep 5
-          docker ps -a
-          docker logs web | tail -20
+          sleep 3
       - name: Install Backdrop
         run: |
           docker exec web php core/scripts/install.sh --db-url=mysql://root:root@db/backdrop --account-name=admin --account-pass="$(openssl rand -hex 12)" --site-name=CI
+          docker exec web php /var/www/html/modules/privatus_analytics/.github/enable-testing.php
           docker exec web chown -R www-data files
       - name: Run the module tests
         run: |
