@@ -1,0 +1,234 @@
+<?php
+/**
+ * @file
+ * Adds the Privatus Analytics tracking script to the page head.
+ *
+ * The module only prints the browser script. It never sends events from the
+ * server and sets no cookies.
+ */
+
+/**
+ * The default origin that serves /js/pa.js.
+ */
+define('PRIVATUS_ANALYTICS_DEFAULT_HOST', 'https://privatusstats.com');
+
+/**
+ * Permission that keeps a user out of the reports.
+ */
+define('PRIVATUS_ANALYTICS_BYPASS_PERMISSION', 'bypass privatus analytics tracking');
+
+/**
+ * Pattern a site ID must match.
+ */
+define('PRIVATUS_ANALYTICS_SITE_ID_PATTERN', '/^pa_[A-Za-z0-9]+$/');
+
+/**
+ * Implements hook_config_info().
+ */
+function privatus_analytics_config_info() {
+  $prefixes['privatus_analytics.settings'] = array(
+    'label' => t('Privatus Analytics settings'),
+    'group' => t('Configuration'),
+  );
+  return $prefixes;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function privatus_analytics_permission() {
+  return array(
+    'administer privatus analytics' => array(
+      'title' => t('Administer Privatus Analytics'),
+      'description' => t('Change the site ID and the tracking settings.'),
+      'restrict access' => TRUE,
+    ),
+    PRIVATUS_ANALYTICS_BYPASS_PERMISSION => array(
+      'title' => t('Do not track with Privatus Analytics'),
+      'description' => t('Keeps these users out of your reports when "Do not track signed-in administrators" is on.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function privatus_analytics_menu() {
+  $items['admin/config/system/privatus-analytics'] = array(
+    'title' => 'Privatus Analytics',
+    'description' => 'Add the cookieless Privatus Analytics script to your pages.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('privatus_analytics_settings_form'),
+    'access arguments' => array('administer privatus analytics'),
+    'file' => 'privatus_analytics.admin.inc',
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_help().
+ */
+function privatus_analytics_help($path, $arg) {
+  if ($path === 'admin/help#privatus_analytics') {
+    $output = '<h3>' . t('About') . '</h3>';
+    $output .= '<p>' . t('Privatus Analytics counts visits without cookies and without personal data. This module adds its script to the head of your pages. You need a Privatus Analytics account to see reports, and there is a free plan.') . '</p>';
+    $output .= '<h3>' . t('Uses') . '</h3>';
+    $output .= '<p>' . t('Enter your site ID on the <a href="@url">settings page</a>. Nothing is loaded until you do.', array('@url' => url('admin/config/system/privatus-analytics'))) . '</p>';
+    return $output;
+  }
+}
+
+/**
+ * Implements hook_preprocess_page().
+ */
+function privatus_analytics_preprocess_page(&$variables) {
+  global $user;
+  $settings = config_get('privatus_analytics.settings');
+  if (!is_array($settings) || !privatus_analytics_should_track($settings, $user, current_path())) {
+    return;
+  }
+  backdrop_add_html_head(array(
+    '#type' => 'head_tag',
+    '#tag' => 'script',
+    '#value' => '',
+    '#attributes' => privatus_analytics_script_attributes($settings),
+  ), 'privatus_analytics_tracker');
+}
+
+/**
+ * Whether a site ID is valid.
+ *
+ * @param mixed $site_id
+ *   The value to check.
+ *
+ * @return bool
+ *   TRUE when the value looks like pa_XXXX.
+ */
+function privatus_analytics_valid_site_id($site_id) {
+  return is_string($site_id) && preg_match(PRIVATUS_ANALYTICS_SITE_ID_PATTERN, $site_id) === 1;
+}
+
+/**
+ * Whether the current request should get the script.
+ *
+ * @param array $settings
+ *   The module settings.
+ * @param object $account
+ *   The current user.
+ * @param string $path
+ *   The current internal path.
+ *
+ * @return bool
+ *   TRUE when the script tag should be printed.
+ */
+function privatus_analytics_should_track(array $settings, $account, $path) {
+  if (!privatus_analytics_valid_site_id($settings['site_id'] ?? NULL)) {
+    return FALSE;
+  }
+  if (!empty($settings['exclude_admin_pages']) && path_is_admin($path)) {
+    return FALSE;
+  }
+  if (!empty($account->uid)) {
+    if (!empty($settings['exclude_admins']) && user_access(PRIVATUS_ANALYTICS_BYPASS_PERMISSION, $account)) {
+      return FALSE;
+    }
+    $excluded_roles = array_filter((array) ($settings['excluded_roles'] ?? array()));
+    if ($excluded_roles && array_intersect((array) $account->roles, $excluded_roles)) {
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+/**
+ * Builds the script tag attributes from the settings.
+ *
+ * Values are escaped when the tag is rendered.
+ *
+ * @param array $settings
+ *   The module settings.
+ *
+ * @return array
+ *   Attribute name to value.
+ */
+function privatus_analytics_script_attributes(array $settings) {
+  $host = rtrim((string) ($settings['script_host'] ?? ''), '/');
+  if (!privatus_analytics_valid_host($host)) {
+    $host = PRIVATUS_ANALYTICS_DEFAULT_HOST;
+  }
+  $attributes = array(
+    'defer' => 'defer',
+    'src' => $host . '/js/pa.js',
+    'data-site' => (string) $settings['site_id'],
+  );
+  $spa = $settings['spa'] ?? 'auto';
+  if ($spa !== 'auto' && in_array($spa, privatus_analytics_spa_modes(), TRUE)) {
+    $attributes['data-spa'] = $spa;
+  }
+  if (!empty($settings['manual'])) {
+    $attributes['data-manual'] = 'true';
+  }
+  $modules = array_values(array_intersect(array_keys(privatus_analytics_modules()), (array) ($settings['modules'] ?? array('engage'))));
+  if ($modules !== array('engage')) {
+    // An empty string is meaningful: it turns every module off.
+    $attributes['data-modules'] = implode(',', $modules);
+  }
+  $lists = array(
+    'domains' => 'data-domains',
+    'excluded_paths' => 'data-exclude',
+    'path_masks' => 'data-mask',
+    'extra_params' => 'data-params',
+  );
+  foreach ($lists as $key => $attribute) {
+    $value = trim((string) ($settings[$key] ?? ''));
+    if ($value !== '') {
+      $attributes[$attribute] = $value;
+    }
+  }
+  if (!empty($settings['canonical'])) {
+    $attributes['data-canonical'] = 'true';
+  }
+  if (!empty($settings['hash'])) {
+    $attributes['data-hash'] = 'true';
+  }
+  return $attributes;
+}
+
+/**
+ * Whether a script host is an http or https origin with no path.
+ *
+ * @param string $host
+ *   The address to check.
+ *
+ * @return bool
+ *   TRUE when the address can be used.
+ */
+function privatus_analytics_valid_host($host) {
+  return is_string($host) && preg_match('#^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?$#', $host) === 1;
+}
+
+/**
+ * The tracker modules a site can turn on.
+ *
+ * @return array
+ *   Module name to label.
+ */
+function privatus_analytics_modules() {
+  return array(
+    'engage' => t('Time on page and scroll depth'),
+    'auto' => t('Outbound links, downloads, forms and 404 pages'),
+    'vitals' => t('Web Vitals (how fast pages load and react)'),
+    'clicks' => t('Click maps'),
+    'ask' => t('On-site surveys'),
+  );
+}
+
+/**
+ * The values the single-page app setting accepts.
+ *
+ * @return array
+ *   The modes.
+ */
+function privatus_analytics_spa_modes() {
+  return array('auto', 'history', 'hash', 'off');
+}

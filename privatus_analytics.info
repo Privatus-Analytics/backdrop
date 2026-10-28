@@ -1,0 +1,6 @@
+name = Privatus Analytics
+description = Adds the cookieless Privatus Analytics script to your pages. No cookies, no cookie pop-up, no bots.
+backdrop = 1.x
+package = Statistics
+type = module
+configure = admin/config/system/privatus-analytics

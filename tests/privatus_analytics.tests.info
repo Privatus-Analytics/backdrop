@@ -1,0 +1,5 @@
+[PrivatusAnalyticsTestCase]
+name = Privatus Analytics
+description = Tests the settings form, the script tag and who is tracked.
+group = Privatus Analytics
+file = privatus_analytics.test

@@ -1,0 +1,183 @@
+<?php
+/**
+ * @file
+ * Tests for the Privatus Analytics module.
+ */
+
+/**
+ * Tests the settings form, the script tag and who is tracked.
+ */
+class PrivatusAnalyticsTestCase extends BackdropWebTestCase {
+
+  /**
+   * A user who can change the settings.
+   *
+   * @var object
+   */
+  protected $adminUser;
+
+  /**
+   * {@inheritdoc}
+   */
+  protected function setUp() {
+    parent::setUp('privatus_analytics');
+    $this->adminUser = $this->backdropCreateUser(array(
+      'administer privatus analytics',
+      'access administration pages',
+    ));
+  }
+
+  /**
+   * Returns the tracker script tag in the head, or NULL.
+   */
+  protected function trackerTag() {
+    $head = preg_replace('#</head>.*#s', '', $this->backdropGetContent());
+    if (preg_match('#<script[^>]*/js/pa\.js[^>]*></script>#', $head, $match)) {
+      return $match[0];
+    }
+    return NULL;
+  }
+
+  /**
+   * Nothing is printed until a site ID is saved.
+   */
+  public function testNoTagWithoutSiteId() {
+    $this->backdropGet('<front>');
+    $this->assertNull($this->trackerTag(), 'No tag without a site ID.');
+  }
+
+  /**
+   * The form saves and the tag shows for visitors in the head.
+   */
+  public function testSettingsFormAndTag() {
+    $this->backdropLogin($this->adminUser);
+    $this->backdropGet('admin/config/system/privatus-analytics');
+    $this->assertResponse(200);
+    $this->assertFieldByName('site_id', '');
+
+    $edit = array(
+      'site_id' => ' pa_TEST123 ',
+      'modules[engage]' => TRUE,
+      'modules[auto]' => TRUE,
+      'modules[vitals]' => TRUE,
+      'modules[clicks]' => TRUE,
+      'modules[ask]' => TRUE,
+      'excluded_paths' => ' /private/* , ,/user/* ',
+    );
+    $this->backdropPost(NULL, $edit, t('Save configuration'));
+    $this->assertText(t('The configuration options have been saved.'));
+
+    $config = config('privatus_analytics.settings');
+    $this->assertEqual($config->get('site_id'), 'pa_TEST123');
+    $modules = array('engage', 'auto', 'vitals', 'clicks', 'ask');
+    $this->assertEqual($config->get('modules'), $modules);
+    $this->assertEqual($config->get('excluded_paths'), '/private/*,/user/*');
+
+    $this->backdropLogout();
+    $this->backdropGet('<front>');
+    $this->assertEqual($this->trackerTag(), '<script defer="defer" src="https://privatusstats.com/js/pa.js" data-site="pa_TEST123" data-modules="engage,auto,vitals,clicks,ask" data-exclude="/private/*,/user/*"></script>');
+  }
+
+  /**
+   * A bad site ID or script host is refused.
+   */
+  public function testValidation() {
+    $this->backdropLogin($this->adminUser);
+    $path = 'admin/config/system/privatus-analytics';
+    $edit = array('site_id' => 'pa_x"><script>alert(1)</script>');
+    $this->backdropPost($path, $edit, t('Save configuration'));
+    $this->assertText('The site ID must look like pa_AbC123');
+    $this->backdropPost($path, array('site_id' => 'abc'), t('Save configuration'));
+    $this->assertText('The site ID must look like pa_AbC123');
+    $edit = array(
+      'site_id' => 'pa_OK1',
+      'script_host' => 'javascript:alert(1)',
+    );
+    $this->backdropPost($path, $edit, t('Save configuration'));
+    $this->assertText('The script host must be an address');
+    $this->assertEqual(config_get('privatus_analytics.settings', 'site_id'), '');
+  }
+
+  /**
+   * Admin pages and signed-in administrators are skipped.
+   */
+  public function testExclusions() {
+    config_set('privatus_analytics.settings', 'site_id', 'pa_EXCL1');
+    $admin = $this->backdropCreateUser(array(
+      'access administration pages',
+      'bypass privatus analytics tracking',
+    ));
+    $editor = $this->backdropCreateUser(array('access administration pages'));
+
+    // A signed-in user without the permission is tracked, but not on admin
+    // pages.
+    $this->backdropLogin($editor);
+    $this->backdropGet('<front>');
+    $this->assertNotNull($this->trackerTag(), 'Signed-in user is tracked.');
+    $this->backdropGet('admin/config');
+    $this->assertNull($this->trackerTag(), 'Admin pages are skipped.');
+    config_set('privatus_analytics.settings', 'exclude_admin_pages', FALSE);
+    $this->backdropGet('admin/config');
+    $this->assertNotNull($this->trackerTag(), 'Admin pages are tracked when the box is off.');
+
+    // A role in the excluded list is skipped.
+    $roles = array_values(array_diff($editor->roles, array(BACKDROP_AUTHENTICATED_ROLE)));
+    config_set('privatus_analytics.settings', 'excluded_roles', $roles);
+    $this->backdropGet('<front>');
+    $this->assertNull($this->trackerTag(), 'Excluded role is skipped.');
+    $this->backdropLogout();
+
+    // An administrator is skipped, unless the box is off.
+    $this->backdropLogin($admin);
+    $this->backdropGet('<front>');
+    $this->assertNull($this->trackerTag(), 'Administrator is skipped.');
+    config_set('privatus_analytics.settings', 'exclude_admins', FALSE);
+    $this->backdropGet('<front>');
+    $this->assertNotNull($this->trackerTag(), 'Administrator is tracked when the box is off.');
+  }
+
+  /**
+   * The attribute builder maps every option and drops bad values.
+   */
+  public function testScriptAttributes() {
+    $settings = array(
+      'site_id' => 'pa_ATTR1',
+      'script_host' => 'https://stats.example.com/',
+      'spa' => 'history',
+      'manual' => TRUE,
+      'modules' => array('engage', 'ask', 'bogus'),
+      'domains' => 'example.com',
+      'excluded_paths' => '/user/*',
+      'path_masks' => '/u/*->/u/:id',
+      'extra_params' => 'page',
+      'canonical' => TRUE,
+      'hash' => TRUE,
+    );
+    $attributes = privatus_analytics_script_attributes($settings);
+    $this->assertEqual($attributes['src'], 'https://stats.example.com/js/pa.js');
+    $this->assertEqual($attributes['data-spa'], 'history');
+    $this->assertEqual($attributes['data-manual'], 'true');
+    $this->assertEqual($attributes['data-modules'], 'engage,ask');
+    $this->assertEqual($attributes['data-domains'], 'example.com');
+    $this->assertEqual($attributes['data-exclude'], '/user/*');
+    $this->assertEqual($attributes['data-mask'], '/u/*->/u/:id');
+    $this->assertEqual($attributes['data-params'], 'page');
+    $this->assertEqual($attributes['data-canonical'], 'true');
+    $this->assertEqual($attributes['data-hash'], 'true');
+
+    $attributes = privatus_analytics_script_attributes(array(
+      'site_id' => 'pa_ATTR1',
+      'modules' => array('engage'),
+      'script_host' => 'javascript:alert(1)',
+    ));
+    $this->assertEqual($attributes['src'], 'https://privatusstats.com/js/pa.js');
+    $this->assertFalse(isset($attributes['data-modules']), 'Engage alone is the tracker default.');
+
+    $attributes = privatus_analytics_script_attributes(array(
+      'site_id' => 'pa_ATTR1',
+      'modules' => array(),
+    ));
+    $this->assertIdentical($attributes['data-modules'], '', 'An empty list turns every module off.');
+  }
+
+}

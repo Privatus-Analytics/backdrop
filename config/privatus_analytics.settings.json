@@ -1,0 +1,19 @@
+{
+  "_config_name": "privatus_analytics.settings",
+  "site_id": "",
+  "script_host": "https://privatusstats.com",
+  "modules": [
+    "engage"
+  ],
+  "exclude_admin_pages": true,
+  "exclude_admins": true,
+  "excluded_roles": [],
+  "excluded_paths": "",
+  "domains": "",
+  "spa": "auto",
+  "manual": false,
+  "path_masks": "",
+  "extra_params": "",
+  "canonical": false,
+  "hash": false
+}

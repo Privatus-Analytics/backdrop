@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 1.x-1.x]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  coding-standards:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: privatus_analytics
+      - uses: actions/checkout@v7
+        with:
+          repository: backdrop-ops/phpcs
+          ref: 1.2.0
+          path: phpcs
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          tools: phpcs
+          coverage: none
+      - name: PHP syntax
+        working-directory: privatus_analytics
+        run: for f in *.module *.inc *.install tests/*.test; do php -l "$f"; done
+      - name: Backdrop coding standard
+        working-directory: privatus_analytics
+        run: phpcs --standard=../phpcs/Backdrop --basepath=. privatus_analytics.module privatus_analytics.admin.inc privatus_analytics.install privatus_analytics.info tests
+
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: privatus_analytics
+      - name: Start Backdrop and MariaDB
+        run: |
+          docker network create bd
+          docker run -d --name db --network bd -e MARIADB_ROOT_PASSWORD=root -e MARIADB_DATABASE=backdrop mariadb:11.4
+          docker run -d --name web --network bd -v "$PWD/privatus_analytics:/var/www/html/modules/privatus_analytics:ro" backdrop:latest
+          for i in $(seq 1 60); do docker exec db healthcheck.sh --connect && break; sleep 2; done
+      - name: Install Backdrop
+        run: |
+          docker exec web php core/scripts/install.sh --db-url=mysql://root:root@db/backdrop --account-name=admin --account-pass="$(openssl rand -hex 12)" --site-name=CI
+          docker exec web chown -R www-data files
+      - name: Run the module tests
+        run: |
+          docker exec -u www-data web php core/scripts/run-tests.sh --url http://localhost --verbose --class PrivatusAnalyticsTestCase | tee result.txt
+          grep -q ' 0 fails, 0 exceptions' result.txt

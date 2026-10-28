@@ -1,0 +1,12 @@
+<?php
+/**
+ * @file
+ * Install and uninstall functions for Privatus Analytics.
+ */
+
+/**
+ * Implements hook_uninstall().
+ */
+function privatus_analytics_uninstall() {
+  config('privatus_analytics.settings')->delete();
+}
